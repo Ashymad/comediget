@@ -1,0 +1,3 @@
+[submodule "comedilib"]
+	path = comedilib
+	url = git@github.com:Ashymad/comedilib
