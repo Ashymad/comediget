@@ -6,18 +6,19 @@ import matplotlib.pyplot as ppl
 from cycler import cycler
 from scipy import signal
 import mplcursors
+import sys
 
 sampt = 300
 
 def normalize(x):
     return (x - x.mean())/x.std()
 
-with h5.File("out.h5", "r") as f:
+with h5.File(sys.argv[1], "r") as f:
     data = f["dset"]
     chans = data.shape[1]
     fs = 1e9/(sampt*chans)
     dt = 1/fs
-    filtf = 20e3/fs
+    filtf = 20e4/fs
     b, a = signal.butter(5, filtf)
     y = np.zeros((len(data), chans));
     for ch in range(chans):
@@ -34,7 +35,7 @@ with h5.File("out.h5", "r") as f:
     magconst = 4
     ppl.plot(np.arange(-4*magconst*sampt/1e9, dt*(len(data)), dt)[0:len(y)], y[:, 0])
     if chans > 1:
-        ppl.plot(np.arange(16*magconst*sampt/1e9, dt*(len(data)+10), dt)[0:len(y)], y[:, 1])
+        ppl.plot(np.arange(16*magconst*sampt/1e9, dt*(len(data)+100), dt)[0:len(y)], y[:, 1])
     for ch in range(2, chans):
         t = np.arange((chans-ch)*magconst*sampt/1e9, dt*(len(data)+10), dt);
         ppl.plot(t[0:len(y)], y[:, ch])
