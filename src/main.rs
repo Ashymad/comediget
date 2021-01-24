@@ -1,10 +1,10 @@
-use log::{debug, info, warn, error};
 use comedilib::*;
-use std::convert::TryInto;
+use log::{debug, error, info, warn};
 use ndarray::{s, Array};
+use pbr::ProgressBar;
+use std::convert::TryInto;
 use std::os::raw::c_double;
 use std::process::exit;
-use pbr::ProgressBar;
 
 macro_rules! checkerr {
     ($e:expr) => {
@@ -15,7 +15,7 @@ macro_rules! checkerr {
                 exit(-1);
             }
         }
-    }
+    };
 }
 
 fn main() {
@@ -23,7 +23,7 @@ fn main() {
     env_logger::init();
 
     let subdevice = 0;
-    let bufsz: usize =  1024;
+    let bufsz: usize = 1024;
     let amount = 100000;
     let chanlist = vec![
         (0, 0, ARef::Ground),
@@ -51,10 +51,18 @@ fn main() {
     } else {
         std::mem::size_of::<Sampl>()
     };
+    info!("Board: {}", checkerr!(comedi.get_board_name()));
+    info!("Driver: {}", checkerr!(comedi.get_driver_name()));
     info!("Device uses {}-byte samples", sample_bytes);
-    info!("Buffer set to: {} bytes", checkerr!(comedi.set_buffer_size(subdevice, (bufsz*chanlist.len()*sample_bytes).try_into().unwrap())));
-    let mut cmd = checkerr!(comedi
-        .get_cmd_generic_timed(subdevice, chanlist.len().try_into().unwrap(), 300));
+    info!(
+        "Kernel ring buffer set to: {} bytes",
+        checkerr!(comedi.set_buffer_size(
+            subdevice,
+            (bufsz * chanlist.len() * sample_bytes).try_into().unwrap()
+        ))
+    );
+    let mut cmd =
+        checkerr!(comedi.get_cmd_generic_timed(subdevice, chanlist.len().try_into().unwrap(), 300));
     cmd.set_chanlist(&chanlist);
     cmd.set_stop(StopTrigger::Count, amount);
 
@@ -77,6 +85,7 @@ fn main() {
     }
 
     checkerr!(comedi.set_read_subdevice(subdevice));
+    checkerr!(comedi.command(&cmd));
 
     let mut total = 0;
     let file = checkerr!(hdf5::File::create("out.h5"));
@@ -88,27 +97,48 @@ fn main() {
     let mut buf = Array::zeros((bufsz, chanlist.len()));
     let mut physbuf = Array::zeros((bufsz, chanlist.len()));
 
-    let dset = checkerr!(file.new_dataset::<c_double>().create("dset", (amount as usize, chanlist.len())));
+    let dset = checkerr!(file
+        .new_dataset::<c_double>()
+        .create("dset", (amount as usize, chanlist.len())));
     let mut leftovers = 0;
     let mut pb = ProgressBar::new(amount.into());
 
-    checkerr!(comedi.command(&cmd));
     loop {
-        let read_s = if subdev_flags.is_set(SDF::LSAMPL) {
-            let read_s = checkerr!(comedi.read_sampl::<LSampl>(lbuf.as_slice_mut().unwrap()));
-            lbuf.iter().zip(physbuf.iter_mut().skip(leftovers)).for_each(|(lbuf_el, physbuf_el)| *physbuf_el = checkerr!(to_phys(*lbuf_el, &range, maxdata)));
-            read_s + leftovers
-        } else {
-            let read_s = checkerr!(comedi.read_sampl::<Sampl>(buf.as_slice_mut().unwrap()));
-            buf.iter().zip(physbuf.iter_mut().skip(leftovers)).for_each(|(buf_el, physbuf_el)| *physbuf_el = checkerr!(to_phys(*buf_el as LSampl, &range, maxdata)));
-            read_s + leftovers
-        };
-        if read_s == 0 { break; }
+        let read_s = leftovers
+            + if checkerr!(comedi.get_buffer_contents(subdevice)) > 0 {
+                if subdev_flags.is_set(SDF::LSAMPL) {
+                    let read_s =
+                        checkerr!(comedi.read_sampl::<LSampl>(lbuf.as_slice_mut().unwrap()));
+                    lbuf.iter()
+                        .zip(physbuf.iter_mut().skip(leftovers))
+                        .for_each(|(lbuf_el, physbuf_el)| {
+                            *physbuf_el = checkerr!(to_phys(*lbuf_el, &range, maxdata))
+                        });
+                    read_s
+                } else {
+                    let read_s = checkerr!(comedi.read_sampl::<Sampl>(buf.as_slice_mut().unwrap()));
+                    buf.iter().zip(physbuf.iter_mut().skip(leftovers)).for_each(
+                        |(buf_el, physbuf_el)| {
+                            *physbuf_el = checkerr!(to_phys(*buf_el as LSampl, &range, maxdata))
+                        },
+                    );
+                    read_s
+                }
+            } else {
+                0
+            };
+        if read_s == 0 {
+            if total as u32 != amount {
+                error!("Device stopped before providing all data");
+                exit(-1);
+            }
+            break;
+        }
         let read = read_s / chanlist.len();
         leftovers = read_s % chanlist.len();
-        checkerr!(dset.write_slice(physbuf.slice(s![..read,..]), s![total..total+read,..]));
+        checkerr!(dset.write_slice(physbuf.slice(s![..read, ..]), s![total..total + read, ..]));
         for i in 0..leftovers {
-            physbuf[[0,i]] = physbuf[[read,i]];
+            physbuf[[0, i]] = physbuf[[read, i]];
         }
         total += read;
         pb.add(read.try_into().unwrap());
