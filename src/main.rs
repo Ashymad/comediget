@@ -91,6 +91,7 @@ fn main() {
 
     let mut leftovers = 0;
     let mut pb = ProgressBar::new(amount.into());
+    let mut spins = 0;
 
     if subdev_flags.is_set(SDF::LSAMPL) {
         let mut buf = Array::zeros((bufsz, chanlist.len()));
@@ -132,10 +133,16 @@ fn main() {
             };
             if read_s == 0 {
                 if total as u32 != amount {
-                    error!("Device stopped before providing all data");
-                    exit(-1);
+                    if spins > 5 {
+                        error!("Device stopped before providing all data");
+                        exit(-1);
+                    }
+                    spins += 1;
+                } else {
+                    break;
                 }
-                break;
+            } else {
+                spins = 0;
             }
             let read = read_s / chanlist.len();
             leftovers = read_s % chanlist.len();
